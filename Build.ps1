@@ -12,7 +12,7 @@ foreach ($size in @(44,150,256)) {
     $bitmap = New-Object System.Drawing.Bitmap($size,$size)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = 'AntiAlias'
-    $graphics.Clear([System.Drawing.Color]::FromArgb(255,24,27,25))
+    $graphics.Clear([System.Drawing.Color]::Transparent)
     $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255,68,214,44),($size/18))
     $graphics.DrawRectangle($pen,($size*0.18),($size*0.3),($size*0.58),($size*0.4))
     $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255,68,214,44))

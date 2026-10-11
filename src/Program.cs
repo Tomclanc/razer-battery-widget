@@ -7,72 +7,6 @@ using WinRT;
 
 namespace RazerBatteryWidget;
 
-public record Device(string Name, string Category, bool HasBattery, int? Level, string Status);
-public record Snapshot(List<Device> Devices, DateTime? Time, string Message);
-
-public static class BatteryReader
-{
-    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] static extern uint CM_Locate_DevNodeW(out uint node, string id, uint flags);
-    static void AddReceivers(List<Device> devices)
-    {
-        using var usb = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\USB\VID_1532&PID_00B3");
-        int count = usb?.GetSubKeyNames().Count(id => CM_Locate_DevNodeW(out _, @"USB\VID_1532&PID_00B3\" + id, 0) == 0) ?? 0;
-        var receivers = devices.Where(d => !d.HasBattery && d.Name.Contains("HYPERPOLLING", StringComparison.OrdinalIgnoreCase)).ToList();
-        for (int i = receivers.Count; i < count; i++) devices.Add(new("HYPERPOLLING 无线接收器", "ACCESSORY", false, null, "USB 供电"));
-        int index = 0;
-        for (int i = 0; i < devices.Count; i++)
-            if (!devices[i].HasBattery && devices[i].Name.Contains("HYPERPOLLING", StringComparison.OrdinalIgnoreCase)) devices[i] = devices[i] with { Name = "HYPERPOLLING 接收器 " + (++index) };
-    }
-    public static Snapshot Read(string? directory = null)
-    {
-        directory ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Razer", "RazerAppEngine", "User Data", "Logs");
-        if (!Directory.Exists(directory)) return new([], null, "未找到雷云日志，请启动 Razer Synapse 4");
-        foreach (var file in new DirectoryInfo(directory).GetFiles("systray_systrayv*.log").OrderByDescending(f => f.LastWriteTimeUtc))
-        {
-            try
-            {
-                using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                long start = Math.Max(0, stream.Length - 8 * 1024 * 1024);
-                stream.Seek(start, SeekOrigin.Begin);
-                using var reader = new StreamReader(stream, System.Text.Encoding.UTF8);
-                if (start > 0) reader.ReadLine();
-                var lines = reader.ReadToEnd().Split('\n');
-                for (int i = lines.Length - 1; i >= 0; i--)
-                {
-                    int marker = lines[i].IndexOf("devices: ", StringComparison.Ordinal);
-                    if (marker < 0) continue;
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(lines[i][(marker + 9)..].Trim());
-                        var devices = new List<Device>();
-                        foreach (var d in doc.RootElement.EnumerateArray())
-                        {
-                            string name = d.TryGetProperty("name", out var n) && n.TryGetProperty("zh-cn", out var cn) && !string.IsNullOrWhiteSpace(cn.GetString()) ? cn.GetString()! : d.GetProperty("name").GetProperty("en").GetString()!;
-                            bool battery = d.TryGetProperty("hasBattery", out var b) && b.ValueKind == JsonValueKind.True;
-                            int? level = null;
-                            string status = battery ? "电量未知" : "USB 供电";
-                            if (battery && d.TryGetProperty("powerStatus", out var power))
-                            {
-                                if (power.TryGetProperty("level", out var l) && l.TryGetInt32(out var value) && value is >= 0 and <= 100) level = value;
-                                string charging = power.TryGetProperty("chargingStatus", out var c) ? c.GetString() ?? "" : "";
-                                status = charging.Contains("NoCharge") ? (level == 100 ? "已充满" : "使用中") : charging.Contains("Charging", StringComparison.OrdinalIgnoreCase) || charging == "Charge" ? "正在充电" : "电量状态未知";
-                            }
-                            devices.Add(new(name, d.TryGetProperty("category", out var cat) ? cat.GetString() ?? "" : "", battery, level, status));
-                        }
-                        DateTime? timestamp = DateTime.TryParse(lines[i].Substring(1, 23), out var t) ? t : null;
-                        AddReceivers(devices);
-                        return new(devices.OrderByDescending(d => d.HasBattery).ToList(), timestamp, devices.Count == 0 ? "雷云当前未发现设备" : "");
-                    }
-                    catch (JsonException) { }
-                }
-            }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
-        }
-        return new([], null, "暂无设备数据，请打开雷云后刷新");
-    }
-}
-
 public static class Card
 {
     static object Text(string text, string size = "Default", string weight = "Default", bool subtle = false, string color = "Default") => new { type = "TextBlock", text, size, weight, isSubtle = subtle, color, wrap = true, spacing = "Small", horizontalAlignment = "Center" };
@@ -112,7 +46,7 @@ public static class Card
         }
         string stamp = snapshot.Time is DateTime t ? $"雷云快照 · {t:HH:mm:ss}" + (DateTime.Now - t > TimeSpan.FromMinutes(5) ? " · 数据可能已过期" : "") : "等待雷云数据";
         body.Add(Text(stamp, "Small", subtle: true));
-        return JsonSerializer.Serialize(new { type = "AdaptiveCard", version = "1.5", body, actions = new[] {new {type = "Action.Execute", title = "刷新", verb = "refresh"}} });
+        return JsonSerializer.Serialize(new { type = "AdaptiveCard", version = "1.5", body, selectAction = new { type = "Action.Execute", verb = "deviceClick", tooltip = "双击打开雷云" }, actions = new[] {new {type = "Action.Execute", title = "刷新", verb = "refresh"}} });
     }
 }
 
@@ -121,6 +55,7 @@ public class Provider : IWidgetProvider
 {
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Active, bool Large)> Widgets = new();
     static readonly Timer RefreshTimer = new(_ => RefreshActive(), null, 15000, 15000);
+    static readonly DoubleClickTracker Clicks = new();
     public Provider()
     {
         foreach (var info in WidgetManager.GetDefault().GetWidgetInfos() ?? []) Widgets.TryAdd(info.WidgetContext.Id, (false, info.WidgetContext.Size == WidgetSize.Large));
@@ -132,11 +67,24 @@ public class Provider : IWidgetProvider
     }
     static void RefreshActive() { foreach (var pair in Widgets) if (pair.Value.Active) Update(pair.Key); }
     public void CreateWidget(WidgetContext context) { Widgets[context.Id] = (true, context.Size == WidgetSize.Large); Update(context.Id); }
-    public void DeleteWidget(string id, string state) { Widgets.TryRemove(id, out _); }
-    public void OnActionInvoked(WidgetActionInvokedArgs args) { Update(args.WidgetContext.Id); }
+    public void DeleteWidget(string id, string state) { Widgets.TryRemove(id, out _); Clicks.Reset(id); }
+    public void OnActionInvoked(WidgetActionInvokedArgs args)
+    {
+        string id = args.WidgetContext.Id;
+        if (args.Verb == "deviceClick")
+        {
+            // Leave the card unchanged after the first click so the host can send
+            // the second action on the same surface.
+            if (Clicks.Click(id, Environment.TickCount64, SynapseLauncher.DoubleClickTime))
+                try { SynapseLauncher.Open(); } catch (Exception e) { Program.Log("Open Synapse: " + e); }
+            return;
+        }
+        Clicks.Reset(id);
+        if (args.Verb == "refresh") Update(id);
+    }
     public void OnWidgetContextChanged(WidgetContextChangedArgs args) { Widgets[args.WidgetContext.Id] = (true, args.WidgetContext.Size == WidgetSize.Large); Update(args.WidgetContext.Id); }
     public void Activate(WidgetContext context) { Widgets[context.Id] = (true, context.Size == WidgetSize.Large); Update(context.Id); }
-    public void Deactivate(string id) { if (Widgets.TryGetValue(id, out var widget)) Widgets[id] = (false, widget.Large); }
+    public void Deactivate(string id) { Clicks.Reset(id); if (Widgets.TryGetValue(id, out var widget)) Widgets[id] = (false, widget.Large); }
 }
 
 [ComImport, Guid("00000001-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
