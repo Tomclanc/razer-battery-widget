@@ -1,0 +1,15 @@
+/app/
+/src/bin/
+/src/obj/
+*.msix
+*.msixbundle
+*.cer
+*.pfx
+*.p12
+*.pdb
+*.log
+installation-result.txt
+/使用说明.txt
+diagnostic.json
+card.json
+.vs/
