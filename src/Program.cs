@@ -11,10 +11,22 @@ public static class Card
 {
     static object Text(string text, string size = "Default", string weight = "Default", bool subtle = false, string color = "Default") => new { type = "TextBlock", text, size, weight, isSubtle = subtle, color, wrap = true, spacing = "Small", horizontalAlignment = "Center" };
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> Images = new();
+    static string DisplayName(Device d)
+    {
+        string name = d.Name;
+        if (name.Contains("炼狱蝰蛇 V3") || name.Contains("DeathAdder V3 Pro", StringComparison.OrdinalIgnoreCase)) return "炼狱蝰蛇 V3 Pro";
+        if (name.Contains("巴塞利斯蛇 V3") || name.Contains("Basilisk V3 Pro", StringComparison.OrdinalIgnoreCase)) return "巴塞利斯蛇 V3 Pro";
+        if (name.Contains("噬魂金蝎 V2") || name.Contains("DeathStalker V2 Pro", StringComparison.OrdinalIgnoreCase)) return "噬魂金蝎 V2";
+        name = name.Replace("RAZER", "", StringComparison.OrdinalIgnoreCase).Trim();
+        return d.HasBattery ? name : name.Replace("HYPERPOLLING 接收器", "接收器");
+    }
     static object? Picture(Device device, int height)
     {
         string name = device.Name;
-        string? asset = name.Contains("巴塞利斯蛇 V3") || name.Contains("Basilisk V3 Pro 35K", StringComparison.OrdinalIgnoreCase) ? "mouse" : name.Contains("噬魂金蝎 V2") || name.Contains("DeathStalker V2 Pro", StringComparison.OrdinalIgnoreCase) ? "keyboard" : name.Contains("HYPERPOLLING", StringComparison.OrdinalIgnoreCase) ? "receiver" : null;
+        bool deathAdder = name.Contains("炼狱蝰蛇 V3") || name.Contains("DeathAdder V3 Pro", StringComparison.OrdinalIgnoreCase);
+        string? asset = deathAdder
+            ? (name.Contains("白色") || name.Contains("White", StringComparison.OrdinalIgnoreCase) ? "deathadder-white" : "deathadder-black")
+            : name.Contains("巴塞利斯蛇 V3") || name.Contains("Basilisk V3 Pro 35K", StringComparison.OrdinalIgnoreCase) ? "mouse" : name.Contains("噬魂金蝎 V2") || name.Contains("DeathStalker V2 Pro", StringComparison.OrdinalIgnoreCase) ? "keyboard" : name.Contains("HYPERPOLLING", StringComparison.OrdinalIgnoreCase) ? "receiver" : null;
         if (asset == null) return null;
         string path = Path.Combine(AppContext.BaseDirectory, "Assets", "Devices", asset + ".png");
         if (!File.Exists(path)) return null;
@@ -25,15 +37,13 @@ public static class Card
     {
         var items = new List<object>();
         bool battery = d.HasBattery;
-        var picture = Picture(d, battery ? (large ? 112 : 72) : (large ? 52 : 36));
+        var picture = Picture(d, battery ? (large ? 88 : 64) : (large ? 44 : 32));
         if (picture != null) items.Add(picture);
-        string name = d.Name.Replace("RAZER ", "").Replace("Razer ", "");
-        if (!battery) name = name.Replace("HYPERPOLLING 接收器", "接收器");
-        items.Add(Text(name, "Small", "Bolder"));
+        items.Add(new { type = "TextBlock", text = DisplayName(d), size = "Small", weight = "Bolder", wrap = false, spacing = "Small", horizontalAlignment = "Center" });
         string color = battery && d.Level <= 20 ? "Attention" : battery ? "Good" : "Default";
         items.Add(Text(battery ? d.Level is int level ? $"{level}%" : "—" : "USB 供电", battery ? "ExtraLarge" : "Small", battery ? "Bolder" : "Default", !battery, color));
         if (large && battery) items.Add(Text(d.Status, "Small", subtle: true));
-        return new { type = "Column", width = "stretch", style = "emphasis", verticalContentAlignment = "Center", items };
+        return new { type = "Column", width = "stretch", verticalContentAlignment = "Top", items };
     }
     public static string Make(Snapshot snapshot, bool large = false)
     {
